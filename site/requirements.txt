@@ -1,0 +1,5 @@
+
+
+-e git+ssh://git@github.com/cmusatyalab/django-s3.git@cb7b34625c5189312d0ce5c4bed3bcdea67af762#egg=django-s3
+
+
