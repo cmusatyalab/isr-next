@@ -41,7 +41,8 @@ from wsgiref.handlers import format_date_time as format_rfc1123_date
 from ...domain import DomainXML
 from ...memory import LibvirtQemuMemoryHeader
 from ...package import Package
-from ...util import ErrorBuffer, ensure_dir, get_cache_dir, setup_libvirt
+from ...util import ErrorBuffer, ensure_dir, get_pristine_cache_dir, \
+    get_modified_cache_dir, setup_libvirt
 from .. import Controller, MachineExecutionError, MachineStateError, Statistic
 from .monitor import (ChunkMapMonitor, LineStreamMonitor,
         LoadProgressMonitor, StatMonitor)
@@ -72,7 +73,7 @@ class _ReferencedObject(object):
         self.last_modified = info.last_modified
 
         parsed_url = urlsplit(self.url)
-        self._cache_info = json.dumps({
+        self._pristine_cache_info = json.dumps({
             # Exclude query string from cache path
             'url': urlunsplit((parsed_url.scheme, parsed_url.netloc,
                     parsed_url.path, '', '')),
@@ -80,10 +81,22 @@ class _ReferencedObject(object):
             'last-modified': self.last_modified.isoformat()
                     if self.last_modified else None,
         }, indent=2, sort_keys=True)
-        self._urlpath = os.path.join(get_cache_dir(), 'chunks',
-                sha256(self._cache_info).hexdigest())
+        self._pristine_urlpath = os.path.join(get_pristine_cache_dir(),
+                'chunks', sha256(self._pristine_cache_info).hexdigest())
         # Hash collisions will allow cache poisoning!
-        self.cache = os.path.join(self._urlpath, label, str(chunk_size))
+        self.pristine_cache = os.path.join(self._pristine_urlpath, label,
+                str(chunk_size))
+
+        self._modified_cache_info = json.dumps({
+         # Exclude query string from cache path
+            'url': urlunsplit((parsed_url.scheme, parsed_url.netloc,
+                    parsed_url.path, '', '')),
+            'etag': self.etag,
+        }, indent=2, sort_keys=True)
+        self._modified_urlpath = os.path.join(get_modified_cache_dir(),
+                'chunks', sha256(self._modified_cache_info).hexdigest())
+        self.modified_cache = os.path.join(self._modified_urlpath, label,
+                str(chunk_size))
 
     # We must access Cookie._rest to perform case-insensitive lookup of
     # the HttpOnly attribute
@@ -92,11 +105,17 @@ class _ReferencedObject(object):
     def vmnetfs_config(self):
         # Write URL and validators into file for ease of debugging.
         # Defer creation of cache directory until needed.
-        ensure_dir(self._urlpath)
-        info_file = os.path.join(self._urlpath, 'info')
+        ensure_dir(self._pristine_urlpath)
+        info_file = os.path.join(self._pristine_urlpath, 'info')
         if not os.path.exists(info_file):
             with open(info_file, 'w') as fh:
-                fh.write(self._cache_info)
+                fh.write(self._pristine_cache_info)
+
+        ensure_dir(self._modified_urlpath)
+        info_file = os.path.join(self._modified_urlpath, 'info')
+        if not os.path.exists(info_file):
+            with open(info_file, 'w') as fh:
+                fh.write(self._modified_cache_info)
 
         # Return XML image element
         e = ElementMaker(namespace=VMNETFS_NS, nsmap={None: VMNETFS_NS})
@@ -136,7 +155,12 @@ class _ReferencedObject(object):
             e.size(str(self.size)),
             origin,
             e.cache(
-                e.path(self.cache),
+                e.pristine(
+                    e.path(self.pristine_cache),
+                ),
+                e.modified(
+                    e.path(self.modified_cache),
+                ),
                 e('chunk-size', str(self.chunk_size)),
             ),
         )

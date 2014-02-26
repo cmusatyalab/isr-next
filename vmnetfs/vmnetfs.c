@@ -46,6 +46,7 @@ static void _image_free(struct vmnetfs_image *img)
         img->cookies = g_list_delete_link(img->cookies, img->cookies);
     }
     g_free(img->read_base);
+    g_free(img->modified_base);
     g_free(img->etag);
     g_slice_free(struct vmnetfs_image, img);
 }
@@ -288,7 +289,8 @@ static bool image_add(GHashTable *images, xmlDocPtr args,
             "v:origin/v:credentials/v:username/text()");
     img->password = xpath_get_str(ctx,
             "v:origin/v:credentials/v:password/text()");
-    img->read_base = xpath_get_str(ctx, "v:cache/v:path/text()");
+    img->read_base = xpath_get_str(ctx, "v:cache/v:pristine/v:path/text()");
+    img->modified_base = xpath_get_str(ctx, "v:cache/v:modified/v:path/text()");
     img->fetch_offset = xpath_get_uint(ctx, "v:origin/v:offset/text()");
     img->initial_size = xpath_get_uint(ctx, "v:size/text()");
     img->chunk_size = xpath_get_uint(ctx, "v:cache/v:chunk-size/text()");

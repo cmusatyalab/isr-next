@@ -32,7 +32,7 @@ from urlparse import urlsplit
 
 from ..controller import Controller
 from ..system import __version__, update_check_url
-from ..util import (NeedAuthentication, get_cache_dir, get_requests_session,
+from ..util import (NeedAuthentication, get_pristine_cache_dir, get_requests_session,
         open_browser, dup, rename)
 from .view import (VMWindow, LoadProgressWindow, PasswordWindow,
         SaveMediaWindow, ErrorWindow, FatalErrorWindow, IgnorableErrorWindow,
@@ -48,7 +48,7 @@ _log = logging.getLogger(__name__)
 
 class _StateCache(object):
     def __init__(self, filename):
-        self._cachedir = get_cache_dir()
+        self._cachedir = get_pristine_cache_dir()
         self._path = os.path.join(self._cachedir, filename)
 
     def _load(self):

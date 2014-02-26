@@ -37,6 +37,7 @@ struct vmnetfs_image {
     char *password;
     GList *cookies;
     char *read_base;
+    char *modified_base;
     uint64_t fetch_offset;
     uint64_t initial_size;
     uint32_t chunk_size;

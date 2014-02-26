@@ -133,13 +133,28 @@ class BackoffTimer(gobject.GObject):
 gobject.type_register(BackoffTimer)
 
 
-def get_cache_dir():
+def get_pristine_cache_dir():
     if sys.platform == 'win32':
         path = os.path.join(get_local_appdata_dir(), 'VMNetX', 'Cache')
     else:
         base = os.environ.get('XDG_CACHE_HOME')
         if not base:
             base = os.path.join(os.environ['HOME'], '.cache')
+        path = os.path.join(base, 'vmnetx')
+
+    if not os.path.exists(path):
+        os.makedirs(path)
+    return path
+
+
+def get_modified_cache_dir():
+    if sys.platform == 'win32':
+        path = os.path.join(get_local_appdata_dir(), 'VMNetX', 'Cache')
+    else:
+        base = os.environ.get('XDG_DATA_HOME')
+        if not base:
+            # Use $HOME/.local/share according to the spec
+            base = os.path.join(os.environ['HOME'], '.local/share')
         path = os.path.join(base, 'vmnetx')
 
     if not os.path.exists(path):
