@@ -207,7 +207,6 @@ out:
 bool _vmnetfs_ll_modified_set_size(struct vmnetfs_image *img,
         uint64_t current_size, uint64_t new_size, GError **err)
 {
-    return true;
     /* If we're truncating the new last chunk, it must be in the modified
        cache to ensure that subsequent expansions don't reveal the truncated
        part. */
@@ -215,11 +214,87 @@ bool _vmnetfs_ll_modified_set_size(struct vmnetfs_image *img,
             new_size % img->chunk_size == 0 ||
             _vmnetfs_bit_test(img->modified_map, new_size / img->chunk_size));
 
-    if (ftruncate(img->write_fd, new_size)) {
-        g_set_error(err, G_FILE_ERROR, g_file_error_from_errno(errno),
-                "Couldn't truncate image: %s", strerror(errno));
-        return false;
-    }
+    uint64_t chunk;
+    uint64_t current_chunks;
+    uint64_t new_chunks;
+    char *dir;
+    char *file;
+    bool ret;
+    int fd;
 
+    current_chunks = (current_size + img->chunk_size - 1) / img->chunk_size;
+    new_chunks = (new_size + img->chunk_size - 1) / img->chunk_size;
+
+    if (new_size > current_size) {
+        for (chunk = current_chunks; chunk < new_chunks; chunk++) {
+            dir = get_dir(img, chunk);
+            file = get_file(img, chunk);
+
+            ret = mkdir_with_parents(dir, err);
+            if (!ret) {
+                goto out;
+            }
+            fd = open(file, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
+            if (fd == -1) {
+                g_set_error(err, G_FILE_ERROR, g_file_error_from_errno(errno),
+                        "Couldn't open to write new modified %s: %s", file, strerror(errno));
+                goto out;
+            }
+            if (ftruncate(fd, img->chunk_size)) {
+                goto out;
+            }
+            close(fd);
+            g_free(dir);
+            g_free(file);
+        }
+    }
+    else {
+        fputs("shrinking\n", img->debug);
+        /* Special case for the last chunks */
+        chunk = new_chunks;
+        dir = get_dir(img, chunk);
+        file = get_file(img, chunk);
+        if (g_file_test(file, G_FILE_TEST_EXISTS)) {
+            int partial;
+            /* 0 <= partial < img->chunk_size */
+            partial = chunk * img->chunk_size - new_size;
+            if (partial > 0) {
+                int new_size = img->chunk_size - partial;
+                fd = open(file, O_WRONLY, S_IRUSR | S_IWUSR);
+                if (fd == -1) {
+                    g_set_error(err, G_FILE_ERROR, g_file_error_from_errno(errno),
+                            "Couldn't open to write partial modified %s: %s", file, strerror(errno));
+                    goto out;
+                }
+                if (ftruncate(fd, new_size)) {
+                    goto out;
+                }
+                if (ftruncate(fd, img->chunk_size)) {
+                    goto out;
+                }
+                close(fd);
+            }
+        }
+        g_free(dir);
+        g_free(file);
+        for (chunk = new_chunks+1; chunk < current_chunks; chunk++) {
+            dir = get_dir(img, chunk);
+            file = get_file(img, chunk);
+
+            if (g_file_test(file, G_FILE_TEST_EXISTS)) {
+                if (remove(file)) {
+                    goto out;
+                }
+            }
+            g_free(dir);
+            g_free(file);
+        }
+
+    }
     return true;
+
+out:
+     g_free(dir);
+     g_free(file);
+     return false;
 }
