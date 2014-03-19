@@ -19,7 +19,6 @@
 from dateutil.parser import parse as parse_date
 from dateutil.tz import tzlocal
 import fcntl
-from getpass import getpass
 import glib
 import json
 import logging
@@ -114,6 +113,10 @@ def setup_signals(server):
         wr.write('x')
     signal.signal(signal.SIGTERM, sig_handler)
     signal.signal(signal.SIGINT, sig_handler)
+
+    # Ignore SIGPIPE so memory image recompression will get EPIPE if a
+    # compressor dies.
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 
 default_server = 'http://%s:%s' % (DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT)

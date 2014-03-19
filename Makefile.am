@@ -79,7 +79,7 @@ distuninstallcheck_listfiles = find . -path ./share/mime -prune -type f -o \
 if ENABLE_LOCAL_EXECUTION
 
 dist_bin_SCRIPTS += tools/vmnetx-generate
-dist_sbin_SCRIPTS = tools/vmnetx-server
+dist_sbin_SCRIPTS = tools/vmnetx-example-frontend tools/vmnetx-server
 
 pkglibexec_PROGRAMS = vmnetfs/vmnetfs
 vmnetfs_vmnetfs_SOURCES = \
@@ -87,6 +87,7 @@ vmnetfs_vmnetfs_SOURCES = \
 	vmnetfs/cond.c \
 	vmnetfs/fuse.c \
 	vmnetfs/fuse-image.c \
+	vmnetfs/fuse-misc.c \
 	vmnetfs/fuse-stats.c \
 	vmnetfs/fuse-stream.c \
 	vmnetfs/io.c \
@@ -107,6 +108,7 @@ nobase_python_PYTHON += \
 	vmnetx/generate.py \
 	vmnetx/memory.py \
 	vmnetx/package.py \
+	vmnetx/source.py \
 	vmnetx/controller/local/__init__.py \
 	vmnetx/controller/local/monitor.py \
 	vmnetx/controller/local/virtevent.py \
@@ -129,12 +131,15 @@ EXTRA_DIST += vmnetx.te
 
 man_MANS += \
 	man/vmnetx-generate.1 \
+	man/vmnetx-example-frontend.8 \
 	man/vmnetx-server.8
 CLEANFILES += \
 	man/vmnetx-generate.1 \
+	man/vmnetx-example-frontend.8 \
 	man/vmnetx-server.8
 EXTRA_DIST += \
 	man/vmnetx-generate.1.in \
+	man/vmnetx-example-frontend.8.in \
 	man/vmnetx-server.8.in
 
 dbusconfdir = $(sysconfdir)/dbus-1/system.d

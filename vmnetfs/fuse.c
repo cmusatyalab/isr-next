@@ -354,7 +354,8 @@ struct vmnetfs_fuse *_vmnetfs_fuse_new(struct vmnetfs *fs, GError **err)
     fuse->fs = fs;
     fuse->root = _vmnetfs_fuse_add_dir(NULL, NULL);
     g_hash_table_foreach(fs->images, add_image, fuse->root);
-    _vmnetfs_fuse_stream_populate_log(fuse->root, fs->log, "log");
+    _vmnetfs_fuse_stream_populate_root(fuse->root, fs);
+    _vmnetfs_fuse_misc_populate_root(fuse->root, fs);
 
     /* Construct mountpoint */
     runtime_dir = getenv("XDG_RUNTIME_DIR");
@@ -445,7 +446,7 @@ void _vmnetfs_fuse_free(struct vmnetfs_fuse *fuse)
 }
 
 /* Return true if the current FUSE request was interrupted. */
-bool _vmnetfs_interrupted(void)
+bool _vmnetfs_fuse_interrupted(void)
 {
     return fuse_interrupted();
 }

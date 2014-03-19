@@ -28,6 +28,7 @@ import requests
 import signal
 import sys
 from tempfile import NamedTemporaryFile
+import time
 from urlparse import urlsplit
 
 from ..controller import Controller
@@ -42,7 +43,9 @@ if sys.platform == 'win32':
     from ..win32 import windows_vmnetx_init as platform_init
 else:
     def platform_init():
-        pass
+        # Ignore SIGPIPE so memory image recompression will get EPIPE if a
+        # compressor dies.
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 _log = logging.getLogger(__name__)
 
@@ -161,6 +164,7 @@ class VMNetXUI(object):
         self._controller = None
         self._wind = None
         self._load_window = None
+        self._load_start = None
         self._network_warning = None
         self._shutting_down = False
         self._io_failed = False
@@ -277,6 +281,7 @@ class VMNetXUI(object):
 
     def _startup_progress(self, _obj, count, total):
         if self._load_window is None:
+            self._load_start = time.time()
             self._load_window = LoadProgressWindow(self._wind)
             self._load_window.connect('user-cancel', self._startup_cancel)
             self._load_window.show_all()
@@ -289,6 +294,8 @@ class VMNetXUI(object):
 
     def _destroy_load_window(self):
         if self._load_window is not None:
+            _log.info('Spent %.1f seconds loading memory image',
+                    time.time() - self._load_start)
             self._load_window.destroy()
             self._load_window = None
 
@@ -304,6 +311,7 @@ class VMNetXUI(object):
         self._show_update_window()
 
     def _startup_rejected_memory(self, _obj):
+        _log.warning('The memory image could not be loaded')
         self._destroy_load_window()
         self._warn_bad_memory()
 

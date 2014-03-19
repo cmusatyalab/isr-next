@@ -22,60 +22,115 @@ import os
 import subprocess
 import sys
 from tempfile import NamedTemporaryFile
-from urlparse import urlunsplit
 
 from .domain import DomainXML, DomainXMLError
 from .memory import LibvirtQemuMemoryHeader
 from .package import Package
+from .source import source_open
 from .util import DetailException
+
+MEMORY_COMPRESS_COMMANDS = {
+    LibvirtQemuMemoryHeader.COMPRESS_RAW: None,
+    LibvirtQemuMemoryHeader.COMPRESS_XZ: ('xz', '-9c'),
+    LibvirtQemuMemoryHeader.COMPRESS_LZOP: ('lzop', '-c'),
+}
+MEMORY_DECOMPRESS_COMMANDS = {
+    LibvirtQemuMemoryHeader.COMPRESS_RAW: None,
+    LibvirtQemuMemoryHeader.COMPRESS_XZ: ('xz', '-dc'),
+    LibvirtQemuMemoryHeader.COMPRESS_LZOP: ('lzop', '-dc', '--ignore-warn'),
+}
+
 
 class MachineGenerationError(DetailException):
     pass
 
 
-def copy_memory(in_path, out_path, xml=None, compress=True):
-    # Disable buffering on fin to ensure that the file offset inherited
-    # by xz is exactly what we pass to seek()
-    fin = open(in_path, 'r', 0)
+def copy_memory(in_path, out_path, xml=None, compression='xz', verbose=True,
+        low_priority=False):
+    def report(line, newline=True):
+        if not verbose:
+            return
+        if newline:
+            print line
+        else:
+            print line,
+            sys.stdout.flush()
+
+    # Open files, read header
+    fin = open(in_path, 'r')
     fout = open(out_path, 'w')
     hdr = LibvirtQemuMemoryHeader(fin)
-    # Ensure the input is uncompressed, even if we will not be compressing
-    if hdr.compressed != hdr.COMPRESS_RAW:
-        raise MachineGenerationError('Cannot recompress save format %d' %
-                hdr.compressed)
+
+    # Determine input and output compression
+    compress_in = hdr.compressed
+    if compress_in not in MEMORY_DECOMPRESS_COMMANDS:
+        raise MachineGenerationError('Cannot decode save format %d' %
+                compress_in)
+    if compression == 'xz':
+        compress_out = hdr.COMPRESS_XZ
+    elif compression == 'lzop':
+        compress_out = hdr.COMPRESS_LZOP
+    elif compression == None:
+        compress_out = hdr.COMPRESS_RAW
+    else:
+        raise ValueError('Unknown compression: %s' % compression)
+    if compress_out not in MEMORY_COMPRESS_COMMANDS:
+        raise MachineGenerationError('Cannot encode save format %d' %
+                compress_out)
 
     # Write header
-    if compress:
-        hdr.compressed = hdr.COMPRESS_XZ
+    hdr.compressed = compress_out
     if xml is not None:
         hdr.xml = xml
     hdr.write(fout, extend=True)
-
-    # Print size of uncompressed image
-    fin.seek(0, 2)
-    total = fin.tell()
-    hdr.seek_body(fin)
-    if compress:
-        action = 'Copying and compressing'
-    else:
-        action = 'Copying'
-    print '%s memory image (%d MB)...' % (action, (total - fin.tell()) >> 20)
-
-    # Write body
     fout.flush()
-    if compress:
-        ret = subprocess.call(['xz', '-9cv'], stdin=fin, stdout=fout)
-        if ret:
-            raise IOError('XZ compressor failed')
-    else:
+
+    processes = []
+    try:
+        # Start compressor/decompressor if required
+        if compress_in != compress_out:
+            for command in (MEMORY_COMPRESS_COMMANDS[compress_out],
+                    MEMORY_DECOMPRESS_COMMANDS[compress_in]):
+                if not command:
+                    continue
+                if low_priority:
+                    # Python < 3.3 doesn't have os.setpriority(), so we use
+                    # the command-line utility
+                    command = ['nice'] + list(command)
+                pipe_r, pipe_w = os.pipe()
+                proc = subprocess.Popen(command, stdin=pipe_r, stdout=fout,
+                        close_fds=True)
+                processes.append(proc)
+                os.close(pipe_r)
+                fout.close()
+                fout = os.fdopen(pipe_w, 'w')
+
+        # Copy body; report progress
+        fin.seek(0, 2)
+        total = fin.tell()
+        hdr.seek_body(fin)
+        if compress_in != compress_out and compress_out != hdr.COMPRESS_RAW:
+            action = 'Copying and compressing'
+        else:
+            action = 'Copying'
         while True:
             buf = fin.read(1 << 20)
             if not buf:
                 break
             fout.write(buf)
-            print '  %3d%%\r' % (100 * fout.tell() / total),
-            sys.stdout.flush()
-        print
+            report('\r%s memory image: %3d%%' % (action,
+                    100 * fin.tell() / total), newline=False)
+        report('')
+    finally:
+        # Clean up
+        fin.close()
+        fout.close()
+        failed = False
+        for proc in reversed(processes):
+            proc.wait()
+            failed = failed or proc.returncode
+        if failed:
+            raise IOError('Compressor/decompressor failed')
 
 
 def copy_disk(in_path, type, out_path, raw=False):
@@ -124,7 +179,7 @@ def generate_machine(name, in_xml, out_file, compress=True):
         if os.path.exists(in_memory):
             temp_memory = NamedTemporaryFile(dir=out_dir, prefix='memory-')
             copy_memory(in_memory, temp_memory.name, domain_xml,
-                    compress=compress)
+                    compression='xz' if compress else None)
         else:
             print 'No memory image found'
 
@@ -146,8 +201,7 @@ def generate_machine(name, in_xml, out_file, compress=True):
 def compress_machine(in_file, out_file, name=None):
     '''Read an uncompressed machine package and write a compressed one.'''
 
-    url = urlunsplit(('file', '', os.path.abspath(in_file), '', ''))
-    package = Package(url)
+    package = Package(source_open(filename=in_file))
 
     # Parse domain XML
     try:
@@ -178,7 +232,8 @@ def compress_machine(in_file, out_file, name=None):
                 print 'Extracting memory image...'
                 package.memory.write_to_file(temp_in)
                 temp_in.flush()
-                copy_memory(temp_in.name, temp_memory.name, domain_xml)
+                copy_memory(temp_in.name, temp_memory.name, domain_xml,
+                        compression='xz')
         else:
             print 'No memory image found'
 

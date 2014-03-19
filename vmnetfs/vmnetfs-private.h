@@ -1,7 +1,7 @@
 /*
  * vmnetfs - virtual machine network execution virtual filesystem
  *
- * Copyright (C) 2006-2012 Carnegie Mellon University
+ * Copyright (C) 2006-2014 Carnegie Mellon University
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as published
@@ -29,6 +29,12 @@ struct vmnetfs {
     struct vmnetfs_fuse *fuse;
     struct vmnetfs_log *log;
     GMainLoop *glib_loop;
+    char *censored_config;
+};
+
+enum fetch_mode {
+    FETCH_MODE_DEMAND,
+    FETCH_MODE_STREAM,
 };
 
 struct vmnetfs_image {
@@ -43,10 +49,12 @@ struct vmnetfs_image {
     uint32_t chunk_size;
     char *etag;
     time_t last_modified;
+    enum fetch_mode fetch_mode;
 
     /* io */
     struct connection_pool *cpool;
     struct chunk_state *chunk_state;
+    struct stream_state *stream;
     struct bitmap_group *bitmaps;
     struct bitmap *accessed_map;
 
@@ -98,6 +106,18 @@ struct vmnetfs_fuse_ops {
     bool nonseekable;
 };
 
+struct vmnetfs_cursor {
+    /* All fields are read-only */
+    uint64_t chunk;
+    uint64_t offset;
+    uint64_t length;
+    uint64_t io_offset;  // offset in the entire I/O operation
+
+    struct vmnetfs_image *img;
+    uint64_t start;
+    uint64_t count;
+};
+
 #define VMNETFS_CONFIG_ERROR _vmnetfs_config_error_quark()
 #define VMNETFS_FUSE_ERROR _vmnetfs_fuse_error_quark()
 #define VMNETFS_IO_ERROR _vmnetfs_io_error_quark()
@@ -146,12 +166,20 @@ void _vmnetfs_fuse_stats_populate(struct vmnetfs_fuse_dentry *dir,
         struct vmnetfs_image *img);
 void _vmnetfs_fuse_stream_populate(struct vmnetfs_fuse_dentry *dir,
         struct vmnetfs_image *img);
-void _vmnetfs_fuse_stream_populate_log(struct vmnetfs_fuse_dentry *dir,
-        struct vmnetfs_log *log, const char *name);
-bool _vmnetfs_interrupted(void);
+void _vmnetfs_fuse_stream_populate_root(struct vmnetfs_fuse_dentry *dir,
+        struct vmnetfs *fs);
+void _vmnetfs_fuse_misc_populate_root(struct vmnetfs_fuse_dentry *dir,
+        struct vmnetfs *fs);
+bool _vmnetfs_fuse_interrupted(void);
+int _vmnetfs_fuse_readonly_pseudo_file_getattr(void *dentry_ctx,
+        struct stat *st);
+int _vmnetfs_fuse_buffered_file_read(struct vmnetfs_fuse_fh *fh, void *buf,
+        uint64_t start, uint64_t count);
+void _vmnetfs_fuse_buffered_file_release(struct vmnetfs_fuse_fh *fh);
 
 /* io */
 bool _vmnetfs_io_init(struct vmnetfs_image *img, GError **err);
+void _vmnetfs_io_open(struct vmnetfs_image *img);
 void _vmnetfs_io_close(struct vmnetfs_image *img);
 bool _vmnetfs_io_image_is_closed(struct vmnetfs_image *img);
 void _vmnetfs_io_destroy(struct vmnetfs_image *img);
@@ -187,6 +215,9 @@ bool _vmnetfs_ll_modified_set_size(struct vmnetfs_image *img,
         uint64_t current_size, uint64_t new_size, GError **err);
 
 /* transport */
+typedef bool (stream_fn)(void *arg, const void *buf, uint64_t count,
+        GError **err);
+typedef bool (should_cancel_fn)(void *arg);
 bool _vmnetfs_transport_init(void);
 struct connection_pool *_vmnetfs_transport_pool_new(GError **err);
 void _vmnetfs_transport_pool_free(struct connection_pool *cpool);
@@ -195,6 +226,13 @@ bool _vmnetfs_transport_pool_set_cookie(struct connection_pool *cpool,
 bool _vmnetfs_transport_fetch(struct connection_pool *cpool, const char *url,
         const char *username, const char *password, const char *etag,
         time_t last_modified, void *buf, uint64_t offset, uint64_t length,
+        should_cancel_fn *should_cancel, void *should_cancel_arg,
+        GError **err);
+bool _vmnetfs_transport_fetch_stream_once(struct connection_pool *cpool,
+        const char *url, const char *username, const char *password,
+        const char *etag, time_t last_modified, stream_fn *callback,
+        void *arg, uint64_t offset, uint64_t length,
+        should_cancel_fn *should_cancel, void *should_cancel_arg,
         GError **err);
 
 /* bitmap */
@@ -272,5 +310,8 @@ bool _vmnetfs_safe_pread(const char *file, int fd, void *buf, uint64_t count,
         uint64_t offset, GError **err);
 bool _vmnetfs_safe_pwrite(const char *file, int fd, const void *buf,
         uint64_t count, uint64_t offset, GError **err);
+void _vmnetfs_cursor_start(struct vmnetfs_image *img,
+        struct vmnetfs_cursor *cur, uint64_t start, uint64_t count);
+bool _vmnetfs_cursor_chunk(struct vmnetfs_cursor *cur, uint64_t count);
 
 #endif

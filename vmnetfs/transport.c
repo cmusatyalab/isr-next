@@ -1,7 +1,7 @@
 /*
  * vmnetfs - virtual machine network execution virtual filesystem
  *
- * Copyright (C) 2006-2013 Carnegie Mellon University
+ * Copyright (C) 2006-2014 Carnegie Mellon University
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as published
@@ -35,10 +35,17 @@ struct connection {
     struct connection_pool *pool;
     CURL *curl;
     char errbuf[CURL_ERROR_SIZE];
+    GError *err;
     char *buf;
+    stream_fn *callback;
+    void *arg;
     uint64_t offset;
     uint64_t length;
+    const char *expected_etag;
+    time_t expected_last_modified;
     char *etag;
+    should_cancel_fn *should_cancel;
+    void *should_cancel_arg;
 };
 
 static size_t header_callback(void *data, size_t size, size_t nmemb,
@@ -66,22 +73,80 @@ static size_t header_callback(void *data, size_t size, size_t nmemb,
     return size * nmemb;
 }
 
+static bool check_validators(struct connection *conn, GError **err)
+{
+    long filetime;
+
+    if (conn->expected_etag) {
+        if (conn->etag == NULL) {
+            g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                    VMNETFS_TRANSPORT_ERROR_FATAL,
+                    "Server did not return ETag");
+            return false;
+        }
+        if (strcmp(conn->expected_etag, conn->etag)) {
+            g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                    VMNETFS_TRANSPORT_ERROR_FATAL,
+                    "ETag mismatch; expected %s, found %s",
+                    conn->expected_etag, conn->etag);
+            return false;
+        }
+    }
+    if (conn->expected_last_modified) {
+        if (curl_easy_getinfo(conn->curl, CURLINFO_FILETIME, &filetime)) {
+            g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                    VMNETFS_TRANSPORT_ERROR_FATAL,
+                    "Couldn't read Last-Modified time");
+            return false;
+        }
+        if (filetime != conn->expected_last_modified) {
+            g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                    VMNETFS_TRANSPORT_ERROR_FATAL,
+                    "Timestamp mismatch; expected %"PRIu64", found %ld",
+                    (uint64_t) conn->expected_last_modified, filetime);
+            return false;
+        }
+    }
+    return true;
+}
+
 static size_t write_callback(void *data, size_t size, size_t nmemb,
         void *private)
 {
     struct connection *conn = private;
     uint64_t count = MIN(size * nmemb, conn->length - conn->offset);
 
-    memcpy(conn->buf + conn->offset, data, count);
+    g_return_val_if_fail(conn->err == NULL, 0);
+
+    if (conn->offset == 0) {
+        /* First received data; check validators */
+        if (!check_validators(conn, &conn->err)) {
+            return 0;
+        }
+    }
+
+    if (conn->callback) {
+        if (!conn->callback(conn->arg, data, count, &conn->err)) {
+            return 0;
+        }
+    } else {
+        memcpy(conn->buf + conn->offset, data, count);
+    }
     conn->offset += count;
     return count;
 }
 
-static int progress_callback(void *private G_GNUC_UNUSED,
+static int progress_callback(void *private,
         double dltotal G_GNUC_UNUSED, double dlnow G_GNUC_UNUSED,
         double ultotal G_GNUC_UNUSED, double ulnow G_GNUC_UNUSED)
 {
-    return _vmnetfs_interrupted();
+    struct connection *conn = private;
+    bool cancel = false;
+
+    if (conn->should_cancel) {
+        cancel = conn->should_cancel(conn->should_cancel_arg);
+    }
+    return cancel;
 }
 
 static void conn_free(struct connection *conn)
@@ -174,6 +239,12 @@ static struct connection *conn_new(struct connection_pool *pool,
         g_set_error(err, VMNETFS_TRANSPORT_ERROR,
                 VMNETFS_TRANSPORT_ERROR_FATAL,
                 "Couldn't set progress callback");
+        goto bad;
+    }
+    if (curl_easy_setopt(conn->curl, CURLOPT_PROGRESSDATA, conn)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set progress data");
         goto bad;
     }
     if (curl_easy_setopt(conn->curl, CURLOPT_ERRORBUFFER, conn->errbuf)) {
@@ -348,46 +419,12 @@ bool _vmnetfs_transport_pool_set_cookie(struct connection_pool *cpool,
     return ret;
 }
 
-static bool check_validators(struct connection *conn, const char *etag,
-        time_t last_modified, GError **err) {
-    long filetime;
-
-    if (etag) {
-        if (conn->etag == NULL) {
-            g_set_error(err, VMNETFS_TRANSPORT_ERROR,
-                    VMNETFS_TRANSPORT_ERROR_FATAL,
-                    "Server did not return ETag");
-            return false;
-        }
-        if (strcmp(etag, conn->etag)) {
-            g_set_error(err, VMNETFS_TRANSPORT_ERROR,
-                    VMNETFS_TRANSPORT_ERROR_FATAL,
-                    "ETag mismatch; expected %s, found %s", etag, conn->etag);
-            return false;
-        }
-    }
-    if (last_modified) {
-        if (curl_easy_getinfo(conn->curl, CURLINFO_FILETIME, &filetime)) {
-            g_set_error(err, VMNETFS_TRANSPORT_ERROR,
-                    VMNETFS_TRANSPORT_ERROR_FATAL,
-                    "Couldn't read Last-Modified time");
-            return false;
-        }
-        if (filetime != last_modified) {
-            g_set_error(err, VMNETFS_TRANSPORT_ERROR,
-                    VMNETFS_TRANSPORT_ERROR_FATAL,
-                    "Timestamp mismatch; expected %"PRIu64", found %ld",
-                    (uint64_t) last_modified, filetime);
-            return false;
-        }
-    }
-    return true;
-}
-
 /* Make one attempt to fetch the specified byte range from the URL. */
 static bool fetch(struct connection_pool *cpool, const char *url,
         const char *username, const char *password, const char *etag,
-        time_t last_modified, void *buf, uint64_t offset, uint64_t length,
+        time_t last_modified, void *buf, stream_fn *callback, void *arg,
+        uint64_t offset, uint64_t length,
+        should_cancel_fn *should_cancel, void *should_cancel_arg,
         GError **err)
 {
     struct connection *conn;
@@ -426,11 +463,28 @@ static bool fetch(struct connection_pool *cpool, const char *url,
         goto out;
     }
     g_free(range);
-    conn->buf = buf;
+    if (buf) {
+        conn->buf = buf;
+        conn->callback = NULL;
+    } else {
+        conn->buf = NULL;
+        conn->callback = callback;
+        conn->arg = arg;
+    }
     conn->offset = 0;
     conn->length = length;
+    conn->expected_etag = etag;
+    conn->expected_last_modified = last_modified;
+    conn->should_cancel = should_cancel;
+    conn->should_cancel_arg = should_cancel_arg;
+    g_assert(conn->err == NULL);
 
     code = curl_easy_perform(conn->curl);
+    if (conn->err) {
+        g_propagate_error(err, conn->err);
+        conn->err = NULL;
+        goto out;
+    }
     switch (code) {
     case CURLE_OK:
         if (conn->offset != length) {
@@ -438,9 +492,8 @@ static bool fetch(struct connection_pool *cpool, const char *url,
                     VMNETFS_TRANSPORT_ERROR_FATAL,
                     "short read from server: %"PRIu64"/%"PRIu64,
                     conn->offset, length);
-        } else if (check_validators(conn, etag, last_modified, err)) {
-            ret = true;
         }
+        ret = true;
         break;
     case CURLE_COULDNT_RESOLVE_PROXY:
     case CURLE_COULDNT_RESOLVE_HOST:
@@ -475,6 +528,7 @@ out:
 bool _vmnetfs_transport_fetch(struct connection_pool *cpool, const char *url,
         const char *username, const char *password, const char *etag,
         time_t last_modified, void *buf, uint64_t offset, uint64_t length,
+        should_cancel_fn *should_cancel, void *should_cancel_arg,
         GError **err)
 {
     GError *my_err = NULL;
@@ -486,7 +540,8 @@ bool _vmnetfs_transport_fetch(struct connection_pool *cpool, const char *url,
             sleep(TRANSPORT_RETRY_DELAY);
         }
         if (fetch(cpool, url, username, password, etag, last_modified, buf,
-                offset, length, &my_err)) {
+                NULL, NULL, offset, length, should_cancel, should_cancel_arg,
+                &my_err)) {
             return true;
         }
         if (!g_error_matches(my_err, VMNETFS_TRANSPORT_ERROR,
@@ -497,4 +552,17 @@ bool _vmnetfs_transport_fetch(struct connection_pool *cpool, const char *url,
     }
     g_propagate_error(err, my_err);
     return false;
+}
+
+/* Attempt to stream the specified URL.  Do not retry. */
+bool _vmnetfs_transport_fetch_stream_once(struct connection_pool *cpool,
+        const char *url, const char *username, const char *password,
+        const char *etag, time_t last_modified, stream_fn *callback,
+        void *arg, uint64_t offset, uint64_t length,
+        should_cancel_fn *should_cancel, void *should_cancel_arg,
+        GError **err)
+{
+    return fetch(cpool, url, username, password, etag, last_modified, NULL,
+            callback, arg, offset, length, should_cancel, should_cancel_arg,
+            err);
 }
