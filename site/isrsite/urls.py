@@ -11,6 +11,6 @@ urlpatterns = patterns('',
     # Uncomment the next line to enable the admin:
     url(r'^admin/', include(admin.site.urls)),
 
-    url(r'^parcel/', include('isrsite.parcel.urls')),
+    url(r'^vm/', include('isrsite.vm.urls')),
     # url(r'', include('isrsite.base.urls'))
 )

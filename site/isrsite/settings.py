@@ -114,7 +114,7 @@ TEMPLATE_DIRS = (
 )
 
 INSTALLED_APPS = (
-    'isrsite.parcel',
+    'isrsite.vm',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
