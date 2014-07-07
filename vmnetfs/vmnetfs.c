@@ -643,11 +643,72 @@ static int fork_and_wait_for_startup(void)
     }
 }
 
+static int checkin(const char *url, const char *disk_path, const char *memory_path)
+{
+    struct connection_pool *cpool = NULL;
+    if (!_vmnetfs_transport_init()) {
+        goto out;
+    }
+
+    /* Iterate through all of the images */
+    GDir *root_dir, *chunk_dir;
+    GError *err = NULL;
+    const char *name, *chunk_dir_path, *file;
+    char *endptr;
+    uint64_t chunk;
+    FILE *chunk_file;
+    char *chunk_path;
+    cpool = _vmnetfs_transport_pool_new(&err);
+
+    char *images[2];
+    images[0] = disk_path;
+    images[1] = memory_path;
+    char *image_names[2];
+    image_names[0] = "disk";
+    image_names[1] = "memory";
+    int i;
+    for (i = 0; i < 2; i++) {
+        root_dir = g_dir_open(images[i], 0, &err);
+        if (root_dir == NULL) {
+            goto out;
+        }
+        char *image_url = g_strdup_printf("%s/%s/chunk", url, image_names[i]);
+        /* Read the chunk directories 0, 4096, ... */
+        while ((name = g_dir_read_name(root_dir)) != NULL) {
+            chunk_dir_path = g_strdup_printf("%s/%s", images[i], name);
+            /* Iterate through chunk directories */
+            if (g_file_test(chunk_dir_path, G_FILE_TEST_IS_DIR)) {
+                chunk_dir = g_dir_open(chunk_dir_path, 0, &err);
+                while ((file = g_dir_read_name(chunk_dir)) != NULL) {
+                    chunk = g_ascii_strtoull(file, &endptr, 10);
+                    chunk_path = g_strdup_printf("%s/%s", chunk_dir_path, file);
+
+                    chunk_file = fopen(chunk_path, "r");
+                    if (chunk_file == NULL) {
+                        goto out;
+                    }
+                    _vmnetfs_io_put_data(NULL, cpool, image_url, chunk, chunk_file, &err);
+                    g_free(chunk_path);
+                    fclose(chunk_file);
+                }
+            }
+        }
+    }
+out:
+    if (cpool != NULL) {
+        _vmnetfs_transport_pool_free(cpool);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     setsignal(SIGINT, SIG_IGN);
 
-    if (argc > 1) {
+    if (argc == 4) {
+        return checkin(argv[1], argv[2], argv[3]);
+    }
+    else if (argc > 1) {
         return run_in_foreground(argv[1]);
     } else {
         return fork_and_wait_for_startup();

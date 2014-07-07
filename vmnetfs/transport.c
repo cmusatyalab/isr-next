@@ -75,6 +75,7 @@ static size_t header_callback(void *data, size_t size, size_t nmemb,
 
 static bool check_validators(struct connection *conn, GError **err)
 {
+    return true;
     long filetime;
 
     if (conn->expected_etag) {
@@ -565,4 +566,107 @@ bool _vmnetfs_transport_fetch_stream_once(struct connection_pool *cpool,
     return fetch(cpool, url, username, password, etag, last_modified, NULL,
             callback, arg, offset, length, should_cancel, should_cancel_arg,
             err);
+}
+
+bool _put_chunk(struct connection_pool *cpool, const char *url,
+        const char *username, const char *password, FILE *chunk_file,
+        GError **err)
+{
+    struct connection *conn;
+    char *range;
+    bool ret = false;
+    CURLcode code;
+
+    conn = conn_get(cpool, err);
+    if (conn == NULL) {
+        return false;
+    }
+    if (curl_easy_setopt(conn->curl, CURLOPT_URL, url)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set connection URL");
+        goto out;
+    }
+    if (curl_easy_setopt(conn->curl, CURLOPT_USERNAME, username)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set authentication username");
+        goto out;
+    }
+    if (curl_easy_setopt(conn->curl, CURLOPT_PASSWORD, password)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set authentication password");
+        goto out;
+    }
+    if (curl_easy_setopt(conn->curl, CURLOPT_UPLOAD, 1L)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set upload mode");
+        goto out;
+    }
+    if (curl_easy_setopt(conn->curl, CURLOPT_PUT, 1L)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set HTTP PUT");
+        goto out;
+    }
+    if (curl_easy_setopt(conn->curl, CURLOPT_READDATA, chunk_file)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set chunk to send");
+        goto out;
+    }
+    if (curl_easy_setopt(conn->curl, CURLOPT_INFILESIZE, 131072)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set chunk size");
+        goto out;
+    }
+    /* disable Expect: 100-continue header */
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Expect:");
+    curl_easy_setopt(conn->curl, CURLOPT_HTTPHEADER, headers);
+
+    g_assert(conn->err == NULL);
+
+    code = curl_easy_perform(conn->curl);
+
+    if (conn->err) {
+        g_propagate_error(err, conn->err);
+        conn->err = NULL;
+        goto out;
+    }
+
+    switch (code) {
+    case CURLE_OK:
+        ret = true;
+        break;
+    case CURLE_COULDNT_RESOLVE_PROXY:
+    case CURLE_COULDNT_RESOLVE_HOST:
+    case CURLE_COULDNT_CONNECT:
+    case CURLE_HTTP_RETURNED_ERROR:
+    case CURLE_OPERATION_TIMEDOUT:
+    case CURLE_GOT_NOTHING:
+    case CURLE_SEND_ERROR:
+    case CURLE_RECV_ERROR:
+    case CURLE_BAD_CONTENT_ENCODING:
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_NETWORK,
+                "curl error %d: %s", code, conn->errbuf);
+        break;
+    case CURLE_ABORTED_BY_CALLBACK:
+        g_set_error(err, VMNETFS_IO_ERROR, VMNETFS_IO_ERROR_INTERRUPTED,
+                "Operation interrupted");
+        break;
+    default:
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "curl error %d: %s", code, conn->errbuf);
+        break;
+    }
+out:
+    curl_easy_setopt(conn->curl, CURLOPT_HTTPGET, 1L);
+    conn_put(conn);
+    return ret;
 }

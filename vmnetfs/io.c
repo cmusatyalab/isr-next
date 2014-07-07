@@ -408,6 +408,7 @@ bool _vmnetfs_io_init(struct vmnetfs_image *img, GError **err)
     }
     img->accessed_map = _vmnetfs_bit_new(img->bitmaps, false);
     img->chunk_state = chunk_state_new(img->initial_size);
+
     return true;
 }
 
@@ -458,6 +459,11 @@ void _vmnetfs_io_destroy(struct vmnetfs_image *img)
         g_thread_join(img->stream->thread);
         g_slice_free(struct stream_state, img->stream);
     }
+
+    /* write size of modified cache to file */
+    char *f = g_strdup_printf("%s/size", img->modified_base);
+    g_file_set_contents(f, g_strdup_printf("%"PRIu64"\n", img->chunk_state->image_size), -1, NULL);
+
     _vmnetfs_ll_modified_destroy(img);
     _vmnetfs_ll_pristine_destroy(img);
     chunk_state_free(img->chunk_state);
@@ -702,4 +708,19 @@ bool _vmnetfs_io_image_size_add_poll_handle(struct vmnetfs_image *img,
     }
     g_mutex_unlock(cs->lock);
     return changed;
+}
+
+bool _vmnetfs_io_put_data(struct vmnetfs_image *img,
+        struct connection_pool *cpool, const char *url, uint64_t chunk,
+        FILE *chunk_file, GError **err)
+{
+    if (img != NULL) {
+        char *chunk_url = g_strdup_printf("%s/%"PRIu64"/", img->url, chunk);
+        _put_chunk(img->cpool, chunk_url, img->username, img->password, chunk_file, err);
+    }
+    else {
+        char *chunk_url = g_strdup_printf("%s/%"PRIu64"/", url, chunk);
+        _put_chunk(cpool, chunk_url, "", "", chunk_file, err);
+    }
+    return true;
 }
