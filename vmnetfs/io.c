@@ -209,10 +209,15 @@ static bool io_interrupted(void *data G_GNUC_UNUSED)
 static bool fetch_data(struct vmnetfs_image *img, void *buf, uint64_t start,
         uint64_t count, GError **err)
 {
-    return _vmnetfs_transport_fetch(img->cpool, img->url, img->username,
+    uint64_t chunk = start / img->chunk_size;
+    char *chunk_url = g_strdup_printf("%s/%"PRIu64"/", img->url, chunk);
+    uint64_t chunk_start = start - (chunk * img->chunk_size);
+    bool ret =  _vmnetfs_transport_fetch(img->cpool, chunk_url, img->username,
             img->password, img->etag, img->last_modified, buf,
-            start + img->fetch_offset, count, io_interrupted, NULL, err);
-}
+            chunk_start, count, io_interrupted, NULL, err);
+    g_free(chunk_url);
+    return ret;
+    }
 
 static bool stream_callback(void *arg, const void *buf, uint64_t count,
         GError **err)
