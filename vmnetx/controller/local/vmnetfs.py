@@ -81,6 +81,19 @@ class VMNetFS(object):
         finally:
             os.close(read)
 
+    @staticmethod
+    def checkin(url, modified_disk_path, modified_memory_path):
+        proc = subprocess.Popen([os.path.join(libexecdir, 'vmnetfs'), url,
+            modified_disk_path, modified_memory_path], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            close_fds=True)
+        out, err = proc.communicate()
+        if len(err) > 0:
+            raise VMNetFSError(err.strip())
+        elif proc.returncode > 0:
+            raise VMNetFSError('vmnetfs returned status %d' %
+                    proc.returncode)
+
     def terminate(self):
         if self._pipe is not None:
             self._pipe.close()
