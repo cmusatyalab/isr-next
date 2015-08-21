@@ -13,7 +13,7 @@ class BaseVMAdmin(admin.ModelAdmin):
 class VMAdmin(admin.ModelAdmin):
     list_display = ('uuid', 'name', 'lock', 'basevm', 'disk_size',
             'memory_size', 'user', 'current_version',
-            'uncommitted_changes', 'date_created')
+            'uncommitted_changes', 'date_created', 'comment', 'num_uploaded')
 
 
 class VersionAdmin(admin.ModelAdmin):
@@ -22,6 +22,7 @@ class VersionAdmin(admin.ModelAdmin):
 
 class LockAdmin(admin.ModelAdmin):
     list_display = ('owner', 'key', 'date_created')
+
 
 admin.site.register(IsrUser, IsrUserAdmin)
 admin.site.register(BaseVM, BaseVMAdmin)

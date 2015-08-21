@@ -12,6 +12,7 @@ import shutil
 from django.views.decorators.http import require_http_methods
 from .models import *
 
+
 # Gets a user by looking up the X-Secret-Key from the header
 def _get_user(request):
     secret_key = request.META.get('HTTP_X_SECRET_KEY')
@@ -269,7 +270,8 @@ def vm(request, uuid, version):
             disk_size = ver.disk_size
             memory_size = ver.memory_size
             new_vm = VM(basevm=vm.basevm, name='%s from v%s' % (vm.name, version),
-                    user=user, disk_size=disk_size, memory_size=memory_size)
+                    user=user, disk_size=disk_size, memory_size=memory_size,
+                    comment='')
             new_vm.save()
 
             # Start versions off from 1 or the original?
@@ -319,6 +321,75 @@ def vm(request, uuid, version):
 
     return HttpResponse()
 
+
+''' Change comment of VM which will be committed in the next version '''
+@require_http_methods(['POST'])
+def comment(request, uuid):
+    user = _get_user(request)
+    vm = get_object_or_404(VM, uuid=uuid)
+    data = json.loads(request.body)
+    if 'comment' in data:
+        vm.comment = data['comment']
+        vm.save()
+        return HttpResponse()
+    else:
+        return HttpRequestBadRequest('Missing comment field')
+
+
+''' Create a new version by moving changes from staging area into storage '''
+@require_http_methods(['POST'])
+def commit(request, uuid):
+    user = _get_user(request)
+    vm = get_object_or_404(VM, uuid=uuid)
+    vm_dir = _get_vm_dir(user.name, vm.uuid)
+
+    # Copy staging area to new version
+    staging_dir = _get_staging_dir(vm.user.name, vm.uuid, vm.current_version)
+    old_version_path = os.path.join(vm_dir, str(vm.current_version))
+    new_version_path = os.path.join(vm_dir, str(vm.current_version + 1))
+    shutil.move(staging_dir, new_version_path)
+    _setup_staging_dir(staging_dir)
+    shutil.copy2(os.path.join(old_version_path, 'domain.xml'),
+            new_version_path)
+
+    # Update new image sizes
+    with open(os.path.join(new_version_path, 'disk/size'), 'r') as file:
+        disk_size = int(file.readline())
+    with open(os.path.join(new_version_path, 'memory/size'), 'r') as file:
+        memory_size = int(file.readline())
+
+    comment = vm.comment
+    vm.current_version += 1
+    vm.disk_size = disk_size
+    vm.memory_size = memory_size
+    vm.uncommitted_changes = False
+    vm.comment = ''
+    vm.save()
+
+    # Make staging area of new version
+    staging_dir = _get_staging_dir(vm.user.name, vm.uuid, vm.current_version)
+    _setup_staging_dir(staging_dir)
+
+    # Create new version object
+    version = Version(vm=vm, number=vm.current_version, disk_size=disk_size,
+            memory_size=memory_size, comment=comment)
+    version.save()
+
+    data = vm.as_json()
+    return HttpResponse(json.dumps(data), content_type='application/json')
+
+
+''' Discard chunks uploaded to the staging area '''
+@require_http_methods(['POST'])
+def discard(request, uuid):
+    user = _get_user(request)
+    vm = get_object_or_404(VM, uuid=uuid)
+
+    staging_dir = _get_staging_dir(vm.user.name, vm.uuid, vm.current_version)
+    shutil.rmtree(staging_dir)
+    _setup_staging_dir(staging_dir)
+
+
 ''' Used to get the size of an image or send size of staged image'''
 @require_http_methods(['GET', 'POST'])
 def size(request, uuid, version, image):
@@ -351,6 +422,7 @@ def size(request, uuid, version, image):
 
         vm.save()
         return HttpResponse()
+
 
 ''' Fetches or stages the chunk of the current version of the vm '''
 #TODO: add secret key to curl in vmnetfs/transport.c
@@ -402,7 +474,9 @@ def chunk(request, uuid, version, image, num):
         chunk_path = os.path.join(chunk_dir, num)
         with open(chunk_path, 'w') as file:
             file.write(chunk)
+
         return HttpResponse()
+
 
 ''' Claims the lock on a VM. If the request asks for force unlock, just delete
     existing lock and return a new one. Requires a 'machine name' field to set
@@ -455,7 +529,8 @@ def create_vm_from_base(request):
     if name == '':
         name = basevm.name
     vm = VM(basevm=basevm, name=name, user=user,
-            disk_size=basevm.disk_size, memory_size=basevm.memory_size)
+            disk_size=basevm.disk_size, memory_size=basevm.memory_size,
+            comment="")
     vm.save()
     version = Version(vm=vm, number=1, disk_size=basevm.disk_size,
             memory_size=basevm.memory_size, comment="Created from basevm",

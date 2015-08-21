@@ -13,5 +13,8 @@ urlpatterns = patterns('',
     url(r'^(?P<uuid>[-\w]+)/(?P<version>\d+)/(?P<image>[-\w]+)/size$', size, name='size'),
     url(r'^(?P<uuid>[-\w]+)/(?P<version>\d+)/(?P<image>[-\w]+)/chunk/(?P<num>\d+)/$', chunk, name='chunk'),
     url(r'^version/(?P<uuid>[-\w]+)', version, name='version'),
+    url(r'^commit/(?P<uuid>[-\w]+)', commit, name='commit'),
+    url(r'^comment/(?P<uuid>[-\w]+)', comment, name='comment'),
+    url(r'^discard/(?P<uuid>[-\w]+)', discard, name='discard'),
 )
 

@@ -46,6 +46,8 @@ class VM(models.Model):
     current_version = models.PositiveIntegerField(default=1)
     uncommitted_changes = models.BooleanField(default=False)
     date_created = models.DateTimeField(auto_now_add=True)
+    comment = models.TextField(max_length=1000)
+    num_uploaded = models.PositiveIntegerField(default=0)
 
     def _datestr(self):
         return self.date_created.strftime('%m-%d-%Y %H:%M:%S %Z')
@@ -60,7 +62,6 @@ class VM(models.Model):
             'Memory size': self.memory_size,
             'Lock owner': self.lock.owner if self.lock is not None else 'None',
             'Date created': self._datestr(),
-
         }
 
     def __unicode__(self):
@@ -72,7 +73,7 @@ class Version(models.Model):
     memory_size = models.PositiveIntegerField()
     number = models.PositiveIntegerField()
     date_created = models.DateTimeField(auto_now_add=True)
-    comment = models.TextField(max_length=200)
+    comment = models.TextField(max_length=1000)
 
     def _datestr(self):
         return self.date_created.strftime('%m-%d-%Y %H:%M:%S %Z')
