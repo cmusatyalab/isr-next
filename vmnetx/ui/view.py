@@ -2193,34 +2193,8 @@ class IsrWindow(gtk.Window):
             app.run()
 
         elif r == RESPONSE_CHECKIN:
-            uuid = self._selected_vm
-            modified_cache = _Image.get_modified_cache_path(uuid)
-            disk_cache = os.path.join(modified_cache, 'disk', '131072')
-            memory_cache = os.path.join(modified_cache, 'memory', '131072')
-
-            if os.path.exists(disk_cache) or os.path.exists(memory_cache):
-                 # send sizes here for now (??)
-                url = urljoin(self._selected_server, 'vm/%s/%s' %
-                        (self._selected_vm, version_wind.selected_version))
-                disk_url = urljoin(url + '/', 'disk/size')
-                memory_url = urljoin(url + '/', 'memory/size')
-                with open(os.path.join(disk_cache, 'size'), 'r') as file:
-                    requests.post(disk_url, data=file.read(), headers=self._headers)
-                with open(os.path.join(memory_cache, 'size'), 'r') as file:
-                    requests.post(memory_url, data=file.read(), headers=self._headers)
-                # TODO: Check which chunks are missing on the server before
-
-                # sending all of them
-                VMNetFS.checkin(url, disk_cache, memory_cache)
-                # get comment from user
-                comment_wind = CommentWindow()
-                if comment_wind.run() == gtk.RESPONSE_OK:
-                    payload = {'comment': comment_wind.comment,
-                            'key': self._vm_cache[self._selected_vm]['Key']}
-                    response = requests.post(url, headers=self._headers, data=payload)
-                    if response.status_code != 200:
-                        print response.text
-                comment_wind.destroy()
+            # TODO: checkin a new version
+            pass
 
         version_wind.destroy()
 
