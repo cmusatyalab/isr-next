@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <glib.h>
 #include "config.h"
+#include <stdio.h>
 
 struct vmnetfs {
     GHashTable *images;
@@ -39,6 +40,8 @@ enum fetch_mode {
 
 struct vmnetfs_image {
     char *url;
+    char *name;
+    FILE *debug;
     char *username;
     char *password;
     GList *cookies;
@@ -50,6 +53,8 @@ struct vmnetfs_image {
     char *etag;
     time_t last_modified;
     enum fetch_mode fetch_mode;
+    uint32_t checkin;
+    double rate;
 
     /* io */
     struct connection_pool *cpool;
@@ -57,6 +62,7 @@ struct vmnetfs_image {
     struct stream_state *stream;
     struct bitmap_group *bitmaps;
     struct bitmap *accessed_map;
+    struct upload_state *upload;
 
     /* ll_pristine */
     struct bitmap *present_map;
@@ -65,6 +71,9 @@ struct vmnetfs_image {
     int write_fd;
     struct bitmap *modified_map;
 
+    /* uploaded chunks */
+    struct bitmap *uploaded_map;
+
     /* stats */
     struct vmnetfs_stream_group *io_stream;
     struct vmnetfs_stat *bytes_read;
@@ -72,6 +81,8 @@ struct vmnetfs_image {
     struct vmnetfs_stat *chunk_fetches;
     struct vmnetfs_stat *chunk_dirties;
     struct vmnetfs_stat *io_errors;
+    struct vmnetfs_stat *chunks_modified;
+    struct vmnetfs_stat *chunks_modified_not_uploaded;
 };
 
 struct vmnetfs_fuse {
@@ -193,6 +204,10 @@ bool _vmnetfs_io_set_image_size(struct vmnetfs_image *img, uint64_t size,
         GError **err);
 bool _vmnetfs_io_image_size_add_poll_handle(struct vmnetfs_image *img,
         struct fuse_pollhandle *ph, uint64_t change_cookie);
+void _vmnetfs_io_upload_start(struct vmnetfs_image *img);
+bool _vmnetfs_io_put_data(struct vmnetfs_image *img,
+        struct connection_pool *cpool,
+        uint64_t chunk, FILE *chunk_file, GError **err);
 
 /* ll_pristine */
 bool _vmnetfs_ll_pristine_init(struct vmnetfs_image *img, GError **err);
@@ -213,6 +228,7 @@ bool _vmnetfs_ll_modified_write_chunk(struct vmnetfs_image *img,
         uint32_t offset, uint32_t length, GError **err);
 bool _vmnetfs_ll_modified_set_size(struct vmnetfs_image *img,
         uint64_t current_size, uint64_t new_size, GError **err);
+bool _vmnetfs_ll_modified_upload(struct vmnetfs_image *img, GError **err);
 
 /* transport */
 typedef bool (stream_fn)(void *arg, const void *buf, uint64_t count,
@@ -234,6 +250,10 @@ bool _vmnetfs_transport_fetch_stream_once(struct connection_pool *cpool,
         void *arg, uint64_t offset, uint64_t length,
         should_cancel_fn *should_cancel, void *should_cancel_arg,
         GError **err);
+bool _put_chunk(struct connection_pool *cpool, const char *url,
+        const char *username, const char *password, FILE *chunk_file,
+        should_cancel_fn *should_cancel, void *should_cancel_arg,
+        GError **err);
 
 /* bitmap */
 struct bitmap_group *_vmnetfs_bit_group_new(uint64_t initial_bits);
@@ -245,6 +265,8 @@ void _vmnetfs_bit_free(struct bitmap *map);
 void _vmnetfs_bit_set(struct bitmap *map, uint64_t bit);
 bool _vmnetfs_bit_test(struct bitmap *map, uint64_t bit);
 struct vmnetfs_stream_group *_vmnetfs_bit_get_stream_group(struct bitmap *map);
+void _vmnetfs_bit_notify(struct bitmap *map, uint64_t bit);
+void _vmnetfs_bit_notify_plus_minus(struct bitmap *map, uint64_t bit, int sign);
 
 /* stream */
 struct vmnetfs_stream;
@@ -272,6 +294,7 @@ void _vmnetfs_stat_free(struct vmnetfs_stat *stat);
 bool _vmnetfs_stat_add_poll_handle(struct vmnetfs_stat *stat,
         struct fuse_pollhandle *ph, uint64_t change_cookie);
 void _vmnetfs_u64_stat_increment(struct vmnetfs_stat *stat, uint64_t val);
+void _vmnetfs_u64_stat_decrement(struct vmnetfs_stat *stat, uint64_t val);
 uint64_t _vmnetfs_u64_stat_get(struct vmnetfs_stat *stat,
         uint64_t *change_cookie);
 

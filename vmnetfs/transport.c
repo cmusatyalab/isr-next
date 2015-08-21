@@ -77,7 +77,6 @@ static bool check_validators(struct connection *conn, GError **err)
 {
     return true;
     long filetime;
-
     if (conn->expected_etag) {
         if (conn->etag == NULL) {
             g_set_error(err, VMNETFS_TRANSPORT_ERROR,
@@ -455,6 +454,7 @@ static bool fetch(struct connection_pool *cpool, const char *url,
                 "Couldn't set authentication password");
         goto out;
     }
+    /*
     range = g_strdup_printf("%"PRIu64"-%"PRIu64, offset, offset + length - 1);
     if (curl_easy_setopt(conn->curl, CURLOPT_RANGE, range)) {
         g_set_error(err, VMNETFS_TRANSPORT_ERROR,
@@ -464,6 +464,7 @@ static bool fetch(struct connection_pool *cpool, const char *url,
         goto out;
     }
     g_free(range);
+    */
     if (buf) {
         conn->buf = buf;
         conn->callback = NULL;
@@ -570,11 +571,13 @@ bool _vmnetfs_transport_fetch_stream_once(struct connection_pool *cpool,
 
 bool _put_chunk(struct connection_pool *cpool, const char *url,
         const char *username, const char *password, FILE *chunk_file,
+        should_cancel_fn *should_cancel, void *should_cancel_arg,
         GError **err)
 {
     struct connection *conn;
     char *range;
     bool ret = false;
+    FILE *f;
     CURLcode code;
 
     conn = conn_get(cpool, err);
@@ -623,11 +626,21 @@ bool _put_chunk(struct connection_pool *cpool, const char *url,
                 "Couldn't set chunk size");
         goto out;
     }
+    // ABSOLUTE MAX SPEED SETTING in BYTES PER SEC
+    if (curl_easy_setopt(conn->curl, CURLOPT_MAX_SEND_SPEED_LARGE, 16 * 125 * 1024)) {
+        g_set_error(err, VMNETFS_TRANSPORT_ERROR,
+                VMNETFS_TRANSPORT_ERROR_FATAL,
+                "Couldn't set max upload speed");
+        goto out;
+    }
+
     /* disable Expect: 100-continue header */
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Expect:");
     curl_easy_setopt(conn->curl, CURLOPT_HTTPHEADER, headers);
 
+    conn->should_cancel = should_cancel;
+    conn->should_cancel_arg = should_cancel_arg;
     g_assert(conn->err == NULL);
 
     code = curl_easy_perform(conn->curl);
@@ -637,7 +650,6 @@ bool _put_chunk(struct connection_pool *cpool, const char *url,
         conn->err = NULL;
         goto out;
     }
-
     switch (code) {
     case CURLE_OK:
         ret = true;
@@ -667,6 +679,8 @@ bool _put_chunk(struct connection_pool *cpool, const char *url,
     }
 out:
     curl_easy_setopt(conn->curl, CURLOPT_HTTPGET, 1L);
+    // This option disables throttling by setting max speed
+    // curl_easy_setopt(conn->curl, CURLOPT_MAX_SEND_SPEED_LARGE, 0);
     conn_put(conn);
     return ret;
 }

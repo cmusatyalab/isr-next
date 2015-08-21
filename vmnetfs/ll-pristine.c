@@ -68,7 +68,9 @@ static bool set_present_from_directory(struct vmnetfs_image *img,
     }
     while ((file = g_dir_read_name(dir)) != NULL) {
         chunk = g_ascii_strtoull(file, &endptr, 10);
-        if (*file == 0 || *endptr != 0 || chunk > chunks ||
+        if (chunk > chunks)
+            continue;
+        if (*file == 0 || *endptr != 0 || // chunk > chunks ||
                 dir_num != get_dir_num(chunk)) {
             g_set_error(err, VMNETFS_IO_ERROR, VMNETFS_IO_ERROR_INVALID_CACHE,
                     "Invalid cache entry %s/%s", path, file);

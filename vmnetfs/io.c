@@ -17,7 +17,11 @@
 
 #include <string.h>
 #include <inttypes.h>
+#include <stdio.h>
 #include "vmnetfs-private.h"
+
+#include <time.h>
+
 
 struct chunk_state {
     GMutex *lock;
@@ -44,6 +48,13 @@ struct stream_state {
     char *buf;
     struct vmnetfs_cursor cur;
 };
+
+///////////////////////////////////////////////////////////////
+struct upload_state {
+    GThread *thread;
+    gint stop;  /* atomic operations only */
+};
+//////////////////////////////////////////////////////////////
 
 static struct chunk_state *chunk_state_new(uint64_t initial_size)
 {
@@ -217,7 +228,7 @@ static bool fetch_data(struct vmnetfs_image *img, void *buf, uint64_t start,
             chunk_start, count, io_interrupted, NULL, err);
     g_free(chunk_url);
     return ret;
-    }
+}
 
 static bool stream_callback(void *arg, const void *buf, uint64_t count,
         GError **err)
@@ -380,6 +391,59 @@ static void stream_stop(struct vmnetfs_image *img)
     }
 }
 
+///////////////////////////////////////////////////////////////////////
+
+static bool do_upload(struct vmnetfs_image *img, GError **err)
+{
+    struct chunk_state *cs = img->chunk_state;
+
+    _vmnetfs_ll_modified_upload(img, err);
+
+    return true;
+}
+
+static void *upload_thread(void *data)
+{
+    struct vmnetfs_image *img = data;
+    GError *my_err = NULL;
+
+    if (!do_upload(img, &my_err)) {
+        if (!g_error_matches(my_err, VMNETFS_IO_ERROR,
+                VMNETFS_IO_ERROR_INTERRUPTED)) {
+            g_warning("%s", my_err->message);
+        }
+        g_clear_error(&my_err);
+    }
+    return NULL;
+}
+
+static bool upload_start(struct vmnetfs_image *img, GError **err)
+{
+    g_assert(!img->upload);
+
+    /* Allocate state */
+    img->upload = g_slice_new0(struct upload_state);
+
+    /* Start background upload thread */
+    img->upload->thread = g_thread_create(upload_thread, img, FALSE, err);
+    if (!img->upload->thread) {
+        goto bad;
+    }
+    return true;
+
+bad:
+    return false;
+}
+
+static void upload_stop(struct vmnetfs_image *img)
+{
+    if (img->upload) {
+        g_atomic_int_set(&img->upload->stop, 1);
+    }
+}
+
+///////////////////////////////////////////////////////////////////////
+
 bool _vmnetfs_io_init(struct vmnetfs_image *img, GError **err)
 {
     GList *cur;
@@ -416,6 +480,28 @@ bool _vmnetfs_io_init(struct vmnetfs_image *img, GError **err)
 
     return true;
 }
+
+/////////////////////////////////////////////////////////////////////////////
+void _vmnetfs_io_upload_start(struct vmnetfs_image *img)
+{
+    GError *my_err = NULL;
+    if (img->checkin) {
+        if (!upload_start(img, &my_err)) {
+            g_warning("Couldn't start upload thread: %s", my_err->message);
+            g_clear_error(&my_err);
+        }
+    }
+    else {
+        //if (g_strcmp0(img->name, "disk") == 0) {
+            if (!upload_start(img, &my_err)) {
+                g_warning("Couldn't start upload thread: %s", my_err->message);
+                g_clear_error(&my_err);
+            }
+        //}
+    }
+}
+///////////////////////////////////////////////////////////////////////////
+
 
 /* Cannot fail because we have already committed to launch. */
 void _vmnetfs_io_open(struct vmnetfs_image *img)
@@ -464,6 +550,14 @@ void _vmnetfs_io_destroy(struct vmnetfs_image *img)
         g_thread_join(img->stream->thread);
         g_slice_free(struct stream_state, img->stream);
     }
+    /*
+    if (img->upload) {
+        upload_stop(img);
+        g_thread_join(img->upload->thread);
+        g_slice_free(struct upload_state, img->upload);
+    }
+    */
+
 
     /* write size of modified cache to file */
     char *f = g_strdup_printf("%s/size", img->modified_base);
@@ -715,17 +809,31 @@ bool _vmnetfs_io_image_size_add_poll_handle(struct vmnetfs_image *img,
     return changed;
 }
 
+static bool upload_should_stop(void *arg)
+{
+    struct vmnetfs_image *img = arg;
+
+    return g_atomic_int_get(&img->upload->stop);
+}
+
+// Need to add lock on chunk before sending (?)
+//
 bool _vmnetfs_io_put_data(struct vmnetfs_image *img,
-        struct connection_pool *cpool, const char *url, uint64_t chunk,
+        struct connection_pool *cpool, uint64_t chunk,
         FILE *chunk_file, GError **err)
 {
-    if (img != NULL) {
-        char *chunk_url = g_strdup_printf("%s/%"PRIu64"/", img->url, chunk);
-        _put_chunk(img->cpool, chunk_url, img->username, img->password, chunk_file, err);
-    }
-    else {
-        char *chunk_url = g_strdup_printf("%s/%"PRIu64"/", url, chunk);
-        _put_chunk(cpool, chunk_url, "", "", chunk_file, err);
-    }
+    clock_t start = clock();
+    char *chunk_url = g_strdup_printf("%s/%"PRIu64"/", img->url, chunk);
+    bool ret;
+    ///if (!chunk_trylock(img, chunk, NULL, err)) {
+    ///    return false;
+    //}
+    ret = _put_chunk(img->cpool, chunk_url, img->username, img->password, chunk_file,
+            upload_should_stop, img, err);
+    //chunk_unlock(img, chunk);
+    clock_t stop = clock();
+    double elapsed = (double)(stop - start) * 1000.0 / CLOCKS_PER_SEC;
+
     return true;
+
 }

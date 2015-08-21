@@ -38,7 +38,10 @@ static void _image_free(struct vmnetfs_image *img)
     _vmnetfs_stat_free(img->chunk_fetches);
     _vmnetfs_stat_free(img->chunk_dirties);
     _vmnetfs_stat_free(img->io_errors);
+    _vmnetfs_stat_free(img->chunks_modified);
+    _vmnetfs_stat_free(img->chunks_modified_not_uploaded);
     g_free(img->url);
+    g_free(img->name);
     g_free(img->username);
     g_free(img->password);
     while (img->cookies) {
@@ -271,6 +274,22 @@ static uint64_t xpath_get_uint(xmlXPathContextPtr ctx, const char *xpath)
     return ret;
 }
 
+static double xpath_get_double(xmlXPathContextPtr ctx, const char *xpath)
+{
+    char *str;
+    char *endptr;
+    double ret;
+
+    str = xpath_get_str(ctx, xpath);
+    if (str == NULL) {
+        return 0;
+    }
+    ret = g_ascii_strtod(str, &endptr);
+    g_assert(*str != 0 && *endptr == 0);
+    g_free(str);
+    return ret;
+}
+
 static void xpath_censor(xmlXPathContextPtr ctx, const char *xpath)
 {
     xmlXPathObjectPtr result;
@@ -301,6 +320,7 @@ static bool image_add(GHashTable *images, xmlDocPtr args,
 
     img = g_slice_new0(struct vmnetfs_image);
     img->url = xpath_get_str(ctx, "v:origin/v:url/text()");
+    img->name = xpath_get_str(ctx, "v:name/text()");
     img->username = xpath_get_str(ctx,
             "v:origin/v:credentials/v:username/text()");
     img->password = xpath_get_str(ctx,
@@ -323,6 +343,9 @@ static bool image_add(GHashTable *images, xmlDocPtr args,
     }
     g_free(str);
 
+    img->checkin = xpath_get_uint(ctx, "v:upload/v:checkin/text()");
+    img->rate = xpath_get_double(ctx, "v:upload/v:rate/text()");
+
     obj = xmlXPathEval(BAD_CAST "v:origin/v:cookies/v:cookie/text()", ctx);
     for (i = 0; obj && obj->nodesetval && i < obj->nodesetval->nodeNr; i++) {
         content = xmlNodeGetContent(obj->nodesetval->nodeTab[i]);
@@ -339,6 +362,8 @@ static bool image_add(GHashTable *images, xmlDocPtr args,
     img->chunk_fetches = _vmnetfs_stat_new();
     img->chunk_dirties = _vmnetfs_stat_new();
     img->io_errors = _vmnetfs_stat_new();
+    img->chunks_modified = _vmnetfs_stat_new();
+    img->chunks_modified_not_uploaded = _vmnetfs_stat_new();
 
     if (!_vmnetfs_io_init(img, err)) {
         _image_free(img);
@@ -370,8 +395,20 @@ static void image_close(void *key G_GNUC_UNUSED, void *value,
     _vmnetfs_stat_close(img->chunk_fetches);
     _vmnetfs_stat_close(img->chunk_dirties);
     _vmnetfs_stat_close(img->io_errors);
+    _vmnetfs_stat_close(img->chunks_modified);
+    _vmnetfs_stat_close(img->chunks_modified_not_uploaded);
     _vmnetfs_stream_group_close(img->io_stream);
 }
+
+///////////////////////////////////////////////////////////////////
+static void image_upload(void *key G_GNUC_UNUSED, void *value,
+        void *data G_GNUC_UNUSED)
+{
+    struct vmnetfs_image *img = value;
+
+    _vmnetfs_io_upload_start(img);
+}
+///////////////////////////////////////////////////////////////////
 
 static void *glib_loop_thread(void *data)
 {
@@ -517,7 +554,10 @@ static void run(FILE *pipe, const char *config_file)
     pipe = NULL;
 
     /* Start image runtimes. */
-    g_hash_table_foreach(fs->images, image_open, NULL);
+    // g_hash_table_foreach(fs->images, image_open, NULL);
+
+    /* Start upload runtimes. */
+    g_hash_table_foreach(fs->images, image_upload, NULL);
 
     /* Run the FUSE event loop until the filesystem is unmounted. */
     _vmnetfs_fuse_run(fs->fuse);
@@ -643,72 +683,11 @@ static int fork_and_wait_for_startup(void)
     }
 }
 
-static int checkin(const char *url, const char *disk_path, const char *memory_path)
-{
-    struct connection_pool *cpool = NULL;
-    if (!_vmnetfs_transport_init()) {
-        goto out;
-    }
-
-    /* Iterate through all of the images */
-    GDir *root_dir, *chunk_dir;
-    GError *err = NULL;
-    const char *name, *chunk_dir_path, *file;
-    char *endptr;
-    uint64_t chunk;
-    FILE *chunk_file;
-    char *chunk_path;
-    cpool = _vmnetfs_transport_pool_new(&err);
-
-    char *images[2];
-    images[0] = disk_path;
-    images[1] = memory_path;
-    char *image_names[2];
-    image_names[0] = "disk";
-    image_names[1] = "memory";
-    int i;
-    for (i = 0; i < 2; i++) {
-        root_dir = g_dir_open(images[i], 0, &err);
-        if (root_dir == NULL) {
-            goto out;
-        }
-        char *image_url = g_strdup_printf("%s/%s/chunk", url, image_names[i]);
-        /* Read the chunk directories 0, 4096, ... */
-        while ((name = g_dir_read_name(root_dir)) != NULL) {
-            chunk_dir_path = g_strdup_printf("%s/%s", images[i], name);
-            /* Iterate through chunk directories */
-            if (g_file_test(chunk_dir_path, G_FILE_TEST_IS_DIR)) {
-                chunk_dir = g_dir_open(chunk_dir_path, 0, &err);
-                while ((file = g_dir_read_name(chunk_dir)) != NULL) {
-                    chunk = g_ascii_strtoull(file, &endptr, 10);
-                    chunk_path = g_strdup_printf("%s/%s", chunk_dir_path, file);
-
-                    chunk_file = fopen(chunk_path, "r");
-                    if (chunk_file == NULL) {
-                        goto out;
-                    }
-                    _vmnetfs_io_put_data(NULL, cpool, image_url, chunk, chunk_file, &err);
-                    g_free(chunk_path);
-                    fclose(chunk_file);
-                }
-            }
-        }
-    }
-out:
-    if (cpool != NULL) {
-        _vmnetfs_transport_pool_free(cpool);
-    }
-    return 0;
-}
-
 int main(int argc, char **argv)
 {
     setsignal(SIGINT, SIG_IGN);
 
-    if (argc == 4) {
-        return checkin(argv[1], argv[2], argv[3]);
-    }
-    else if (argc > 1) {
+    if (argc > 1) {
         return run_in_foreground(argv[1]);
     } else {
         return fork_and_wait_for_startup();
