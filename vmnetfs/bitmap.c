@@ -90,6 +90,14 @@ static void notify_bit(struct bitmap *map, uint64_t bit)
     _vmnetfs_stream_group_write(map->sgrp, "%"PRIu64"\n", bit);
 }
 
+static void notify_bit_plus_minus(struct bitmap *map, uint64_t bit, int sign)
+{
+    if (sign)
+        _vmnetfs_stream_group_write(map->sgrp, "+%"PRIu64"\n", bit);
+    else
+        _vmnetfs_stream_group_write(map->sgrp, "-%"PRIu64"\n", bit);
+}
+
 static bool test_bit(struct bitmap *map, uint64_t bit)
 {
     return !!(map->bits[bit / 8] & (1 << (bit % 8)));
@@ -244,4 +252,14 @@ bool _vmnetfs_bit_test(struct bitmap *map, uint64_t bit)
 struct vmnetfs_stream_group *_vmnetfs_bit_get_stream_group(struct bitmap *map)
 {
     return map->sgrp;
+}
+
+void _vmnetfs_bit_notify(struct bitmap *map, uint64_t bit)
+{
+    notify_bit(map, bit);
+}
+
+void _vmnetfs_bit_notify_plus_minus(struct bitmap *map, uint64_t bit, int sign)
+{
+    notify_bit_plus_minus(map, bit, sign);
 }

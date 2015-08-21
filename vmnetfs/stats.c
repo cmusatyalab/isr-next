@@ -87,6 +87,14 @@ void _vmnetfs_u64_stat_increment(struct vmnetfs_stat *stat, uint64_t val)
     g_mutex_unlock(stat->lock);
 }
 
+void _vmnetfs_u64_stat_decrement(struct vmnetfs_stat *stat, uint64_t val)
+{
+    g_mutex_lock(stat->lock);
+    stat->u64 -= val;
+    _vmnetfs_pollable_change(stat->pll);
+    g_mutex_unlock(stat->lock);
+}
+
 uint64_t _vmnetfs_u64_stat_get(struct vmnetfs_stat *stat,
         uint64_t *change_cookie)
 {
