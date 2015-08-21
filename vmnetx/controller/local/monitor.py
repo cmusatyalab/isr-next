@@ -123,7 +123,7 @@ gobject.type_register(LineStreamMonitor)
 class _ChunkStreamMonitor(_StreamMonitorBase):
     __gsignals__ = {
         'chunk-emitted': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
-                (gobject.TYPE_UINT64, gobject.TYPE_UINT64)),
+                (gobject.TYPE_INT64, gobject.TYPE_INT64)),
     }
 
     def _handle_lines(self, lines):
@@ -140,6 +140,7 @@ class ChunkMapMonitor(_Monitor):
         ChunkStateArray.CACHED: 'chunks_cached',
         ChunkStateArray.ACCESSED: 'chunks_accessed',
         ChunkStateArray.MODIFIED: 'chunks_modified',
+        ChunkStateArray.UPLOADED: 'chunks_uploaded',
     }
 
     def __init__(self, reporter, image_path):
@@ -201,3 +202,105 @@ class LoadProgressMonitor(_Monitor):
     def close(self):
         self._stream.close()
 gobject.type_register(LoadProgressMonitor)
+
+
+class CheckinProgressMonitor(_Monitor):
+    __gsignals__ = {
+        'checkin-progress': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
+                (gobject.TYPE_UINT64, gobject.TYPE_UINT64,
+                    gobject.TYPE_UINT64, gobject.TYPE_UINT64,)),
+    }
+
+    def __init__(self, disk_path, memory_path):
+        _Monitor.__init__(self)
+
+        # ADD STAT TO TRACK THE NUMBER OF MODIFIED CHUNKS (NOT ALL)
+        self._disk_chunks = self._read_stat(disk_path,
+                'chunks_modified_not_uploaded')
+        self._disk_chunk_size = self._read_stat(disk_path, 'chunk_size')
+        self._disk_seen = 0
+        self._disk_stream = _ChunkStreamMonitor(os.path.join(disk_path,
+                'streams', 'chunks_uploaded'))
+        self._disk_stream.connect('chunk-emitted', self._disk_progress)
+
+        self._memory_chunks = self._read_stat(memory_path,
+                'chunks_modified_not_uploaded')
+        self._memory_chunk_size = self._read_stat(memory_path, 'chunk_size')
+        self._memory_seen = 0
+        self._memory_stream = _ChunkStreamMonitor(os.path.join(memory_path,
+            'streams', 'chunks_uploaded'))
+        self._memory_stream.connect('chunk-emitted', self._memory_progress)
+
+    def _read_stat(self, image_path, name):
+        path = os.path.join(image_path, 'stats', name)
+        with io.open(path) as fh:
+            return int(fh.readline().strip())
+
+    def _disk_progress(self, _monitor, first, last):
+        # We don't keep a bitmap of previously-seen chunks, because we
+        # assume that vmnetfs will never emit a chunk twice.  This is true
+        # so long as the image is not resized.
+        self._disk_seen += last - first + 1
+        self._emit_progress()
+
+    def _memory_progress(self, _monitor, first, last):
+        self._memory_seen += last - first + 1
+        self._emit_progress()
+
+    def _emit_progress(self):
+        self.emit('checkin-progress',
+                self._disk_seen * self._disk_chunk_size,
+                self._disk_chunks * self._disk_chunk_size,
+                self._memory_seen * self._memory_chunk_size,
+                self._memory_chunks * self._memory_chunk_size)
+
+    def close(self):
+        self._disk_stream.close()
+        self._memory_stream.close()
+gobject.type_register(CheckinProgressMonitor)
+
+class BackgroundUploadMonitor(_Monitor):
+    __gsignals__ = {
+        'background-upload': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
+                (gobject.TYPE_UINT64, gobject.TYPE_UINT64,)),
+    }
+
+    def __init__(self, disk_path, memory_path):
+        _Monitor.__init__(self)
+        self._disk_chunk_size = self._read_stat(disk_path, 'chunk_size')
+        self._memory_chunk_size = self._read_stat(memory_path, 'chunk_size')
+        self._disk_chunks = 0
+        self._memory_chunks = 0
+
+        reporter = Statistic('chunks')
+        reporter.connect('stat-changed', self._modify_disk)
+        self._disk_monitor = StatMonitor(reporter, disk_path,
+                'chunks_modified_not_uploaded')
+
+        reporter = Statistic('chunks')
+        reporter.connect('stat-changed', self._modify_memory)
+        self._memory_monitor = StatMonitor(reporter, memory_path,
+                'chunks_modified_not_uploaded')
+
+    def _read_stat(self, image_path, name):
+        path = os.path.join(image_path, 'stats', name)
+        with io.open(path) as fh:
+            return int(fh.readline().strip())
+
+    def _modify_disk(self, _monitor, _name, chunks):
+        self._disk_chunks = chunks
+        self._emit_progress()
+
+    def _modify_memory(self, _monitor, _name, chunks):
+        self._memory_chunks = chunks
+        self._emit_progress()
+
+    def _emit_progress(self):
+        self.emit('background-upload',
+                self._disk_chunks * self._disk_chunk_size,
+                self._memory_chunks * self._memory_chunk_size)
+
+    def close(self):
+        self._disk_monitor.close()
+        self._memory_monitor.close()
+gobject.type_register(BackgroundUploadMonitor)

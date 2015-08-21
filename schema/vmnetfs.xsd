@@ -47,6 +47,7 @@ for more details.
       <xsd:element name="origin" type="OriginSpec"/>
       <xsd:element name="cache" type="CacheSpec"/>
       <xsd:element name="fetch" type="FetchSpec" minOccurs="0"/>
+      <xsd:element name="upload" type="UploadSpec" minOccurs="0"/>
     </xsd:all>
   </xsd:complexType>
 
@@ -168,6 +169,16 @@ for more details.
           </xsd:restriction>
         </xsd:simpleType>
       </xsd:element>
+    </xsd:all>
+  </xsd:complexType>
+
+  <xsd:complexType name="UploadSpec">
+    <xsd:annotation><xsd:documentation>
+      How to do the upload.
+    </xsd:documentation></xsd:annotation>
+    <xsd:all>
+      <xsd:element name="checkin" type="xsd:unsignedInt"/>
+      <xsd:element name="rate" type="xsd:double"/>
     </xsd:all>
   </xsd:complexType>
 </xsd:schema>

@@ -92,3 +92,90 @@ class LibvirtQemuMemoryHeader(object):
         fh.seek(0)
         fh.write(struct.pack(self.HEADER_FORMAT, *header))
         fh.write(struct.pack('%ds' % xml_len, self.xml))
+
+    def write_aligned(self, fh):
+        expected_header_size = 8192
+        current_size = self.HEADER_LENGTH + len(self.xml)
+        padding_size = expected_header_size - current_size
+        if padding_size < 0:
+            msg = "WE FIXED LIBVIRT HEADER SIZE TO 2*4096\n" + \
+                    "But given xml size is bigger than 2*4096"
+            raise MachineGenerationError(msg)
+        elif padding_size > 0:
+            new_xml = self.xml + ("\0" * padding_size)
+            self._xml_len = len(new_xml)
+            self.xml = new_xml
+
+        # Calculate header
+        header = [self.HEADER_MAGIC,
+                self.HEADER_VERSION,
+                self._xml_len,
+                self.was_running,
+                self.compressed]
+        header.extend([0] * self.HEADER_UNUSED_VALUES)
+
+        # Write data
+        fh.seek(0)
+        fh.write(struct.pack(self.HEADER_FORMAT, *header))
+        fh.write(struct.pack('%ds' % self._xml_len, self.xml))
+
+
+class LibvirtQemuMemoryHeaderData(LibvirtQemuMemoryHeader):
+    HEADER_MAGIC_PARTIAL = 'LibvirtQemudPart'
+
+    def __init__(self, data):
+        # Read header struct
+        buf = data[:self.HEADER_LENGTH]
+        header = list(struct.unpack(self.HEADER_FORMAT, buf))
+        magic = header.pop(0)
+        version = header.pop(0)
+        self._xml_len = header.pop(0)
+        self.was_running = header.pop(0)
+        self.compressed = header.pop(0)
+
+        # Check header
+        if magic != self.HEADER_MAGIC and magic != self.HEADER_MAGIC_PARTIAL:
+            # libvirt replace magic_partial to magic after finishing saving
+            msg = 'Invalid memory image magic'
+            LOG.error(msg)
+            raise MachineGenerationError(msg)
+        if version != self.HEADER_VERSION:
+            msg = 'Unknown memory image version %d' % version
+            LOG.error(msg)
+            raise MachineGenerationError(msg)
+        if header != [0] * self.HEADER_UNUSED_VALUES:
+            msg = 'Unused header values not 0'
+            LOG.error(msg)
+            raise MachineGenerationError(msg)
+
+        # Read XML, drop trailing NUL padding
+        self.xml = data[self.HEADER_LENGTH:self.HEADER_LENGTH+self._xml_len]
+        if self.xml[-1] != '\0':
+            raise MachineGenerationError('Missing NUL byte after XML')
+
+    def get_aligned_header(self, expected_header_size):
+        current_size = self.HEADER_LENGTH + len(self.xml)
+        padding_size = expected_header_size - current_size
+        if padding_size < 0:
+            msg = "WE FIXED LIBVIRT HEADER SIZE TO 2*4096\n" + \
+                    "But given xml size is bigger than 2*4096"
+            raise MachineGenerationError(msg)
+        elif padding_size > 0:
+            new_xml = self.xml + ("\0" * padding_size)
+            self._xml_len = len(new_xml)
+            self.xml = new_xml
+        return self.get_header()
+
+    def get_header(self):
+        # Calculate header
+        header = [self.HEADER_MAGIC,
+                self.HEADER_VERSION,
+                self._xml_len,
+                self.was_running,
+                self.compressed]
+        header.extend([0] * self.HEADER_UNUSED_VALUES)
+
+        # Write data
+        header_binary = struct.pack(self.HEADER_FORMAT, *header)
+        header_binary += struct.pack('%ds' % self._xml_len, self.xml)
+        return header_binary

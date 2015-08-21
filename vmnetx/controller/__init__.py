@@ -47,10 +47,16 @@ class Controller(gobject.GObject):
         'vm-started': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
                 (gobject.TYPE_BOOLEAN,)),
         'vm-stopped': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE, ()),
+        # 'vm-shutting-down': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE, ()),
         'network-disconnect': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE, ()),
         'network-reconnect': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE, ()),
         'fatal-error': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
                 (ErrorBuffer,)),
+        'checkin-progress': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
+                (gobject.TYPE_UINT64, gobject.TYPE_UINT64,
+                gobject.TYPE_UINT64, gobject.TYPE_UINT64)),
+        'background-upload': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
+                (gobject.TYPE_UINT64, gobject.TYPE_UINT64)),
     }
 
     STATE_UNINITIALIZED = 0
@@ -59,6 +65,7 @@ class Controller(gobject.GObject):
     STATE_RUNNING = 3
     STATE_STOPPING = 4
     STATE_DESTROYED = 5
+    STATE_SHUTTING_DOWN = 6
 
     def __init__(self):
         gobject.GObject.__init__(self)
@@ -80,7 +87,7 @@ class Controller(gobject.GObject):
         self.password = None
 
     @classmethod
-    def get_for_ref(cls, package_ref, use_spice):
+    def get_for_ref(cls, package_ref, use_spice, throttle_rate='1.0'):
         # Convert package_ref to URL
         url = package_ref
         parsed = urlsplit(url)
@@ -106,7 +113,8 @@ class Controller(gobject.GObject):
             else:
                 category = 'Local'
                 from .local import LocalController
-                return LocalController(url=url, use_spice=use_spice)
+                return LocalController(url=url, use_spice=use_spice,
+                        throttle_rate=throttle_rate)
         except ImportError:
             raise MachineExecutionError(('%s execution of virtual machines ' +
                     'is not supported on this system') % category)
@@ -228,10 +236,11 @@ class ChunkStateArray(gobject.GObject):
     ACCESSED = 3
     MODIFIED = 4
     ACCESSED_MODIFIED = 5
+    UPLOADED = 6
 
     __gsignals__ = {
         'chunk-state-changed': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
-                (gobject.TYPE_UINT64, gobject.TYPE_UINT64)),
+                (gobject.TYPE_INT64, gobject.TYPE_INT64)),
         'image-resized': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE,
                 (gobject.TYPE_UINT64,)),
     }
@@ -264,11 +273,23 @@ class ChunkStateArray(gobject.GObject):
             self._ensure_size(chunks)
 
     def update_chunks(self, state, first, last):
+        def emit(first, last):
+            self.emit('chunk-state-changed', first, last)
+
+        # If chunk state is uploaded but the value is negative, revert the state
+        # of the chunk to being accessed and modified.
+        if first == last and first < 0:
+            chunk = abs(first)
+            cur_state = self._chunks[chunk]
+            if cur_state == self.UPLOADED:
+                self._chunks[chunk] = self.ACCESSED_MODIFIED
+                emit(abs(first), abs(last))
+            return
+
         # We may be notified of a chunk beyond the current EOF before we
         # are notified that the image has been resized.
         self._ensure_size(last + 1)
-        def emit(first, last):
-            self.emit('chunk-state-changed', first, last)
+
         with RangeConsolidator(emit) as c:
             for chunk in xrange(first, last + 1):
                 cur_state = self._chunks[chunk]

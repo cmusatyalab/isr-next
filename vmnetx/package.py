@@ -15,10 +15,13 @@
 # for more details.
 #
 
+from datetime import datetime
 from lxml import etree
 from lxml.builder import ElementMaker
 import os
+import requests
 import struct
+from urlparse import urlsplit, urljoin
 import zipfile
 
 from .source import SourceError, SourceRange
@@ -71,11 +74,57 @@ class _PackageMember(SourceRange):
                 info.header_offset + header_len + name_len + extra_len,
                 info.file_size, load_data)
 
+class _IsrObject(object):
+    def __init__(self, url=None, size=None, username=None, password=None):
+        class a:
+            pass
+        self.source = a()
+
+        self.source.url = url
+        self.source.cookies = None
+        self.source.etag = 'etag'
+        self.source.last_modified = datetime.now()
+        self.length = size
+        self.data = None
+        self.offset = 0
+        self.chunk_size = 131072
 
 class Package(object):
     def __init__(self, source):
         self.url = source.url
 
+        parsed = urlsplit(self.url)
+        if parsed.scheme == 'isr':
+            self.name = parsed.path[1:]
+            from urlparse import urlunsplit
+            server_url = urlunsplit(['http', parsed.netloc, self.name,
+                None, None])
+
+            # domain xml
+            self.domain = _IsrObject()
+            headers = {'X-Secret-Key': 'secret'}
+            response = requests.get(urljoin(server_url, '?type=xml'),
+                    headers=headers)
+            self.domain.data = response.content
+            # disk
+            disk_url = os.path.join(server_url, 'disk/chunk')
+            response = requests.get(os.path.join(server_url, 'disk/size'),
+                    headers=headers)
+            disk_size = int(response.text)
+            self.disk = _IsrObject(url=disk_url, size=disk_size)
+            # memory
+            memory_url = os.path.join(server_url, 'memory/chunk')
+            response = requests.get(os.path.join(server_url, 'memory/size'),
+                    headers=headers)
+            memory_size = int(response.text)
+            if memory_size > 0:
+                self.memory = _IsrObject(url=memory_url, size=memory_size)
+            else:
+                self.memory = None
+
+            return None
+
+        # Read Zip
         try:
             zip = zipfile.ZipFile(source, 'r')
 

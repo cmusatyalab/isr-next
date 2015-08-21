@@ -157,9 +157,10 @@ class VMNetXUI(object):
     UPDATE_DEFER_DAYS = 7
     RESUME_CHECK_DELAY = 1000  # ms
 
-    def __init__(self, package_ref):
-        gobject.threads_init()
+    def __init__(self, package_ref, name=None, throttle_rate='1.0'):
+        # gobject.threads_init()
         self._package_ref = package_ref
+        self._name = name
         self._username_cache = _UsernameCache()
         self._controller = None
         self._wind = None
@@ -172,13 +173,7 @@ class VMNetXUI(object):
         self._bad_memory = False
         self._update = _UpdateState(self.UPDATE_DEFER_DAYS)
         self._update_wind = None
-
-        try:
-            icon = gtk.icon_theme_get_default().load_icon('vmnetx', 256, 0)
-            gtk.window_set_default_icon(icon)
-        except glib.GError:
-            # Icon not installed in search path
-            pass
+        self._throttle_rate=throttle_rate
 
     def run(self):
         try:
@@ -193,8 +188,10 @@ class VMNetXUI(object):
             self._update.check_for_update()
 
             # Create controller
-            self._controller = Controller.get_for_ref(self._package_ref,
-                    have_spice_viewer)
+            if self._controller is None:
+                self._controller = Controller.get_for_ref(self._package_ref,
+                        have_spice_viewer, throttle_rate=self._throttle_rate)
+
             self._controller.setup_environment()
             self._controller.connect('startup-progress',
                     self._startup_progress)
@@ -204,10 +201,13 @@ class VMNetXUI(object):
             self._controller.connect('fatal-error', self._fatal_error)
             self._controller.connect('vm-started', self._vm_started)
             self._controller.connect('vm-stopped', self._vm_stopped)
+            # self._controller.connect('vm-shutting-down', self._vm_shutting_down)
             self._controller.connect('network-disconnect',
                     self._network_disconnect)
             self._controller.connect('network-reconnect',
                     self._network_reconnect)
+            self._controller.connect('background-upload',
+                    self._background_upload)
 
             # Fetch and parse metadata
             pw_wind = None
@@ -236,6 +236,8 @@ class VMNetXUI(object):
                     break
 
             # Show main window
+            if self._name:
+                self._controller.vm_name = self._name
             self._wind = VMWindow(self._controller.vm_name,
                     disk_stats=self._controller.disk_stats,
                     disk_chunks=self._controller.disk_chunks,
@@ -291,6 +293,9 @@ class VMNetXUI(object):
         self._shutting_down = True
         self._controller.stop_vm()
         self._wind.hide()
+
+    def _background_upload(self, _obj, disk_total, memory_total):
+        self._wind.update_dirty_state(disk_total, memory_total)
 
     def _destroy_load_window(self):
         if self._load_window is not None:
@@ -400,6 +405,12 @@ class VMNetXUI(object):
             self._wind.set_vm_running(False)
             self._controller.start_vm()
 
+    '''
+    def _vm_shutting_down(self, _obj):
+        print "shutting down in UI"
+        # self._shutdown()
+        '''
+
     def _shutdown(self, _obj=None):
         self._wind.show_activity(False)
         self._wind.show_log(False)
@@ -407,6 +418,13 @@ class VMNetXUI(object):
             self._update_wind.hide()
         self._wind.hide()
         gobject.idle_add(gtk.main_quit)
+        '''
+        if self._wind is not None:
+            self._wind.destroy()
+        if self._controller is not None:
+            self._controller.shutdown()
+        logging.shutdown()
+        '''
 
     def _screenshot(self, _obj, pixbuf):
         sw = SaveMediaWindow(self._wind, 'Save Screenshot',

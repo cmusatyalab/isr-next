@@ -55,6 +55,10 @@ class VMNetFS(object):
         self._pipe = None
         self.mountpoint = None
 
+        f = open('/home/dayoon/senior/debug/xml_vmnetfs', 'w')
+        f.write(self._args)
+        f.close()
+
     def start(self):
         read, write = os.pipe()
         try:
@@ -87,12 +91,14 @@ class VMNetFS(object):
             modified_disk_path, modified_memory_path], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             close_fds=True)
+        print "????"
         out, err = proc.communicate()
         if len(err) > 0:
             raise VMNetFSError(err.strip())
         elif proc.returncode > 0:
             raise VMNetFSError('vmnetfs returned status %d' %
                     proc.returncode)
+        print out
 
     def terminate(self):
         if self._pipe is not None:
