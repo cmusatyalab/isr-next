@@ -282,6 +282,11 @@ def source_open(url=None, scheme=None, username=None, password=None,
                     password=password)
         elif parsed.scheme == 'file':
             return _FileSource(url)
+        elif parsed.scheme == 'isr':
+            class _s:
+                def __init__(self, url):
+                    self.url = url
+            return _s(url)
         else:
             raise ValueError('%s: URLs not supported' % parsed.scheme)
 
